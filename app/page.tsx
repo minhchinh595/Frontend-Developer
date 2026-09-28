@@ -36,13 +36,18 @@ type Conversation = {
   messages: Message[];
 };
 
-const STORAGE_KEY = "research-ai-conversations";
+const STORAGE_KEY =
+  "research-ai-conversations";
 
 const ACTIVE_CONVERSATION_KEY =
   "research-ai-active-conversation";
 
 const DOCUMENTS_STORAGE_KEY =
   "research-ai-documents";
+
+// =========================================
+// EMPTY ANSWER
+// =========================================
 
 const createEmptyAnswer =
   (): StructuredAnswer => ({
@@ -71,114 +76,277 @@ const normalizeAnswer = (
 
   return {
     summary:
-      typeof parsed.summary === "string"
-        ? parsed.summary
+      typeof parsed.summary ===
+      "string"
+        ? parsed.summary.trim()
         : "",
 
     key_points:
-      Array.isArray(parsed.key_points)
+      Array.isArray(
+        parsed.key_points
+      )
         ? parsed.key_points.filter(
             (
               item
             ): item is string =>
-              typeof item === "string"
+              typeof item ===
+              "string"
           )
         : [],
 
     risks:
-      Array.isArray(parsed.risks)
+      Array.isArray(
+        parsed.risks
+      )
         ? parsed.risks.filter(
             (
               item
             ): item is string =>
-              typeof item === "string"
+              typeof item ===
+              "string"
           )
         : [],
 
     actions:
-      Array.isArray(parsed.actions)
+      Array.isArray(
+        parsed.actions
+      )
         ? parsed.actions.filter(
             (
               item
             ): item is string =>
-              typeof item === "string"
+              typeof item ===
+              "string"
           )
         : [],
   };
 };
 
 // =========================================
-// READ JSON RESPONSE
+// EXTRACT JSON
 // =========================================
 
-const readAIResponse =
-  async (
-    response: Response
-  ): Promise<StructuredAnswer> => {
+const extractJSON = (
+  content: string
+): unknown => {
+  let text =
+    content.trim();
+
+  // Remove Markdown JSON block
+  if (
+    text.startsWith("```")
+  ) {
+    text = text
+      .replace(
+        /^```(?:json)?/i,
+        ""
+      )
+      .replace(
+        /```$/i,
+        ""
+      )
+      .trim();
+  }
+
+  // Try complete JSON
+  try {
+    return JSON.parse(text);
+  } catch {
+    // Continue
+  }
+
+  // Try extracting JSON object
+  const firstBrace =
+    text.indexOf("{");
+
+  const lastBrace =
+    text.lastIndexOf("}");
+
+  if (
+    firstBrace !== -1 &&
+    lastBrace !== -1 &&
+    lastBrace > firstBrace
+  ) {
+    const possibleJSON =
+      text.substring(
+        firstBrace,
+        lastBrace + 1
+      );
+
     try {
-      const data =
-        await response.json();
-
-      return normalizeAnswer(data);
-    } catch (error) {
-      console.error(
-        "Unable to parse AI response:",
-        error
+      return JSON.parse(
+        possibleJSON
       );
+    } catch {
+      return null;
+    }
+  }
 
+  return null;
+};
+
+// =========================================
+// READ STREAMING AI RESPONSE
+// =========================================
+
+const readStreamingAIResponse =
+  async (
+    response: Response,
+    onProgress?: (
+      text: string
+    ) => void
+  ): Promise<StructuredAnswer> => {
+    if (!response.body) {
       throw new Error(
-        "The AI returned an invalid response."
+        "The AI response stream is not available."
       );
+    }
+
+    const reader =
+      response.body.getReader();
+
+    const decoder =
+      new TextDecoder("utf-8");
+
+    let accumulated = "";
+
+    try {
+      while (true) {
+        const {
+          done,
+          value,
+        } =
+          await reader.read();
+
+        if (done) {
+          break;
+        }
+
+        const chunk =
+          decoder.decode(
+            value,
+            {
+              stream: true,
+            }
+          );
+
+        accumulated += chunk;
+
+        onProgress?.(
+          accumulated
+        );
+      }
+
+      // Flush remaining UTF-8 characters
+      accumulated +=
+        decoder.decode();
+
+      const parsed =
+        extractJSON(
+          accumulated
+        );
+
+      if (!parsed) {
+        console.error(
+          "Invalid streamed AI response:",
+          accumulated
+        );
+
+        throw new Error(
+          "The AI returned an invalid structured response."
+        );
+      }
+
+      return normalizeAnswer(
+        parsed
+      );
+    } finally {
+      reader.releaseLock();
     }
   };
 
+// =========================================
+// HOME
+// =========================================
+
 export default function Home() {
   const fileInputRef =
-    useRef<HTMLInputElement>(null);
+    useRef<HTMLInputElement>(
+      null
+    );
 
-  const [documents, setDocuments] =
-    useState<DocumentItem[]>([]);
+  const [
+    documents,
+    setDocuments,
+  ] =
+    useState<DocumentItem[]>(
+      []
+    );
 
-  const [isUploading, setIsUploading] =
+  const [
+    isUploading,
+    setIsUploading,
+  ] =
     useState(false);
 
-  const [question, setQuestion] =
+  const [
+    question,
+    setQuestion,
+  ] =
     useState("");
 
-  const [messages, setMessages] =
+  const [
+    messages,
+    setMessages,
+  ] =
     useState<Message[]>([]);
 
-  const [isAsking, setIsAsking] =
+  const [
+    isAsking,
+    setIsAsking,
+  ] =
     useState(false);
 
-  const [error, setError] =
+  const [
+    error,
+    setError,
+  ] =
     useState("");
 
-  const [conversations, setConversations] =
-    useState<Conversation[]>([]);
+  const [
+    conversations,
+    setConversations,
+  ] =
+    useState<Conversation[]>(
+      []
+    );
 
   const [
     activeConversationId,
     setActiveConversationId,
-  ] = useState<string | null>(null);
+  ] =
+    useState<
+      string | null
+    >(null);
 
-  // Prevent localStorage save effects
-  // from running before initial data is loaded.
   const [
     isStorageLoaded,
     setIsStorageLoaded,
-  ] = useState(false);
+  ] =
+    useState(false);
+
+  const [
+    streamLength,
+    setStreamLength,
+  ] =
+    useState(0);
 
   // =========================================
-  // LOAD DATA FROM LOCAL STORAGE
+  // LOAD LOCAL STORAGE
   // =========================================
 
   useEffect(() => {
     try {
-      // ---------------------------------------
-      // LOAD CONVERSATIONS
-      // ---------------------------------------
-
       const savedConversations =
         localStorage.getItem(
           STORAGE_KEY
@@ -187,16 +355,23 @@ export default function Home() {
       let parsedConversations:
         Conversation[] = [];
 
-      if (savedConversations) {
+      if (
+        savedConversations
+      ) {
         try {
           const parsed =
             JSON.parse(
               savedConversations
             );
 
-          if (Array.isArray(parsed)) {
+          if (
+            Array.isArray(
+              parsed
+            )
+          ) {
             parsedConversations =
               parsed;
+
             setConversations(
               parsedConversations
             );
@@ -208,10 +383,6 @@ export default function Home() {
           );
         }
       }
-
-      // ---------------------------------------
-      // LOAD ACTIVE CONVERSATION
-      // ---------------------------------------
 
       const savedActiveId =
         localStorage.getItem(
@@ -228,7 +399,9 @@ export default function Home() {
               savedActiveId
           );
 
-        if (activeConversation) {
+        if (
+          activeConversation
+        ) {
           setActiveConversationId(
             activeConversation.id
           );
@@ -258,16 +431,14 @@ export default function Home() {
         );
       }
 
-      // ---------------------------------------
-      // LOAD DOCUMENTS
-      // ---------------------------------------
-
       const savedDocuments =
         localStorage.getItem(
           DOCUMENTS_STORAGE_KEY
         );
 
-      if (savedDocuments) {
+      if (
+        savedDocuments
+      ) {
         try {
           const parsedDocuments =
             JSON.parse(
@@ -296,7 +467,9 @@ export default function Home() {
         error
       );
     } finally {
-      setIsStorageLoaded(true);
+      setIsStorageLoaded(
+        true
+      );
     }
   }, []);
 
@@ -337,7 +510,9 @@ export default function Home() {
     }
 
     try {
-      if (activeConversationId) {
+      if (
+        activeConversationId
+      ) {
         localStorage.setItem(
           ACTIVE_CONVERSATION_KEY,
           activeConversationId
@@ -370,7 +545,9 @@ export default function Home() {
     try {
       localStorage.setItem(
         DOCUMENTS_STORAGE_KEY,
-        JSON.stringify(documents)
+        JSON.stringify(
+          documents
+        )
       );
     } catch (error) {
       console.error(
@@ -384,171 +561,198 @@ export default function Home() {
   ]);
 
   // =========================================
-  // OPEN FILE SELECTOR
+  // UPLOAD CLICK
   // =========================================
 
-  const handleUploadClick = () => {
-    fileInputRef.current?.click();
-  };
+  const handleUploadClick =
+    () => {
+      fileInputRef.current?.click();
+    };
 
   // =========================================
   // UPLOAD FILE
   // =========================================
 
-  const handleFileChange = async (
-    event: React.ChangeEvent<HTMLInputElement>
-  ) => {
-    const files =
-      event.target.files;
+  const handleFileChange =
+    async (
+      event: React.ChangeEvent<HTMLInputElement>
+    ) => {
+      const files =
+        event.target.files;
 
-    if (
-      !files ||
-      files.length === 0
-    ) {
-      return;
-    }
-
-    setIsUploading(true);
-    setError("");
-
-    try {
-      for (
-        const file of Array.from(files)
+      if (
+        !files ||
+        files.length === 0
       ) {
-        if (
-          file.type !==
-          "application/pdf"
+        return;
+      }
+
+      setIsUploading(true);
+      setError("");
+
+      try {
+        for (
+          const file of Array.from(
+            files
+          )
         ) {
-          setError(
-            `${file.name} is not a PDF file.`
-          );
-
-          continue;
-        }
-
-        if (
-          file.size >
-          20 * 1024 * 1024
-        ) {
-          setError(
-            `${file.name} is larger than 20 MB.`
-          );
-
-          continue;
-        }
-
-        try {
-          const formData =
-            new FormData();
-
-          formData.append(
-            "file",
-            file
-          );
-
-          const response =
-            await fetch(
-              "/api/documents/parse",
-              {
-                method: "POST",
-                body: formData,
-              }
-            );
-
-          const data =
-            await response.json();
-
-          if (!response.ok) {
+          if (
+            file.type !==
+            "application/pdf"
+          ) {
             setError(
-              data.error ||
-                `Failed to process ${file.name}.`
+              `${file.name} is not a PDF file.`
             );
 
             continue;
           }
 
-          const newDocument:
-            DocumentItem = {
-            id: crypto.randomUUID(),
+          if (
+            file.size >
+            20 *
+              1024 *
+              1024
+          ) {
+            setError(
+              `${file.name} is larger than 20 MB.`
+            );
 
-            name: file.name,
+            continue;
+          }
 
-            size: file.size,
+          try {
+            const formData =
+              new FormData();
 
-            type: file.type,
+            formData.append(
+              "file",
+              file
+            );
 
-            content: data.text,
+            const response =
+              await fetch(
+                "/api/documents/parse",
+                {
+                  method:
+                    "POST",
+                  body: formData,
+                }
+              );
 
-            pageCount:
-              data.pageCount,
-          };
+            const data =
+              await response.json();
 
-          setDocuments(
-            (current) => [
-              ...current,
-              newDocument,
-            ]
-          );
-        } catch (error) {
-          console.error(error);
+            if (
+              !response.ok
+            ) {
+              setError(
+                data.error ||
+                  `Failed to process ${file.name}.`
+              );
 
-          setError(
-            `Could not process ${file.name}.`
-          );
+              continue;
+            }
+
+            const newDocument:
+              DocumentItem =
+              {
+                id: crypto.randomUUID(),
+
+                name: file.name,
+
+                size: file.size,
+
+                type: file.type,
+
+                content:
+                  data.text,
+
+                pageCount:
+                  data.pageCount,
+              };
+
+            setDocuments(
+              (
+                current
+              ) => [
+                ...current,
+                newDocument,
+              ]
+            );
+          } catch (
+            error
+          ) {
+            console.error(
+              error
+            );
+
+            setError(
+              `Could not process ${file.name}.`
+            );
+          }
         }
-      }
-    } finally {
-      setIsUploading(false);
+      } finally {
+        setIsUploading(
+          false
+        );
 
-      event.target.value = "";
-    }
-  };
+        event.target.value =
+          "";
+      }
+    };
 
   // =========================================
   // DELETE DOCUMENT
   // =========================================
 
-  const handleDeleteDocument = (
-    documentId: string
-  ) => {
-    if (isAsking) {
-      return;
-    }
+  const handleDeleteDocument =
+    (
+      documentId: string
+    ) => {
+      if (isAsking) {
+        return;
+      }
 
-    const documentToDelete =
-      documents.find(
-        (document) =>
-          document.id ===
-          documentId
-      );
-
-    if (!documentToDelete) {
-      return;
-    }
-
-    const confirmed =
-      window.confirm(
-        `Delete "${documentToDelete.name}"?`
-      );
-
-    if (!confirmed) {
-      return;
-    }
-
-    setDocuments(
-      (current) =>
-        current.filter(
-          (document) =>
-            document.id !==
+      const documentToDelete =
+        documents.find(
+          (
+            document
+          ) =>
+            document.id ===
             documentId
-        )
-    );
+        );
 
-    setError("");
-  };
+      if (
+        !documentToDelete
+      ) {
+        return;
+      }
+
+      const confirmed =
+        window.confirm(
+          `Delete "${documentToDelete.name}"?`
+        );
+
+      if (!confirmed) {
+        return;
+      }
+
+      setDocuments(
+        (current) =>
+          current.filter(
+            (
+              document
+            ) =>
+              document.id !==
+              documentId
+          )
+      );
+
+      setError("");
+    };
 
   // =========================================
-  // CREATE NEW CONVERSATION
+  // CREATE CONVERSATION
   // =========================================
 
   const createConversation =
@@ -559,7 +763,8 @@ export default function Home() {
         crypto.randomUUID();
 
       const title =
-        firstQuestion.length > 40
+        firstQuestion.length >
+        40
           ? `${firstQuestion.slice(
               0,
               40
@@ -567,15 +772,17 @@ export default function Home() {
           : firstQuestion;
 
       const conversation:
-        Conversation = {
-        id,
+        Conversation =
+        {
+          id,
 
-        title,
+          title,
 
-        createdAt: Date.now(),
+          createdAt:
+            Date.now(),
 
-        messages: [],
-      };
+          messages: [],
+        };
 
       setConversations(
         (current) => [
@@ -592,7 +799,7 @@ export default function Home() {
     };
 
   // =========================================
-  // UPDATE CONVERSATION MESSAGES
+  // UPDATE CONVERSATION
   // =========================================
 
   const updateConversationMessages =
@@ -603,7 +810,9 @@ export default function Home() {
       setConversations(
         (current) =>
           current.map(
-            (conversation) =>
+            (
+              conversation
+            ) =>
               conversation.id ===
               conversationId
                 ? {
@@ -617,117 +826,16 @@ export default function Home() {
     };
 
   // =========================================
-  // SEND QUESTION TO AI
+  // GET AI RESPONSE
   // =========================================
 
-  const handleAskAI = async (
-    questionOverride?: string
-  ) => {
-    const currentQuestion =
-      questionOverride ?? question;
-
-    if (
-      !currentQuestion.trim()
-    ) {
-      return;
-    }
-
-    if (
-      documents.length === 0
-    ) {
-      setError(
-        "Please upload at least one document first."
-      );
-
-      return;
-    }
-
-    if (isAsking) {
-      return;
-    }
-
-    setError("");
-    setIsAsking(true);
-
-    const userQuestion =
-      currentQuestion.trim();
-
-    // ---------------------------------------
-    // CREATE OR USE CONVERSATION
-    // ---------------------------------------
-
-    let conversationId =
-      activeConversationId;
-
-    if (!conversationId) {
-      conversationId =
-        createConversation(
-          userQuestion
-        );
-    }
-
-    // ---------------------------------------
-    // CREATE USER MESSAGE
-    // ---------------------------------------
-
-    const userMessage:
-      Message = {
-      id: crypto.randomUUID(),
-
-      role: "user",
-
-      content: userQuestion,
-    };
-
-    const updatedMessages =
-      [
-        ...messages,
-        userMessage,
-      ];
-
-    setMessages(
-      updatedMessages
-    );
-
-    setQuestion("");
-
-    // ---------------------------------------
-    // CREATE TEMP ASSISTANT MESSAGE
-    // ---------------------------------------
-
-    const assistantId =
-      crypto.randomUUID();
-
-    const assistantMessage:
-      Message = {
-      id: assistantId,
-
-      role: "assistant",
-
-      answer:
-        createEmptyAnswer(),
-    };
-
-    const messagesWithAssistant =
-      [
-        ...updatedMessages,
-        assistantMessage,
-      ];
-
-    setMessages(
-      messagesWithAssistant
-    );
-
-    updateConversationMessages(
-      conversationId,
-      messagesWithAssistant
-    );
-
-    try {
-      // -------------------------------------
-      // CALL API
-      // -------------------------------------
-
+  const requestAI =
+    async (
+      userQuestion: string,
+      onProgress?: (
+        length: number
+      ) => void
+    ) => {
       const response =
         await fetch(
           "/api/chat",
@@ -745,7 +853,9 @@ export default function Home() {
 
               documents:
                 documents.map(
-                  (document) => ({
+                  (
+                    document
+                  ) => ({
                     name:
                       document.name,
 
@@ -756,10 +866,6 @@ export default function Home() {
             }),
           }
         );
-
-      // -------------------------------------
-      // HANDLE API ERROR
-      // -------------------------------------
 
       if (!response.ok) {
         const errorText =
@@ -788,304 +894,363 @@ export default function Home() {
         );
       }
 
-      // -------------------------------------
-      // READ JSON
-      // -------------------------------------
+      return readStreamingAIResponse(
+        response,
+        (text) => {
+          onProgress?.(
+            text.length
+          );
+        }
+      );
+    };
 
-      const finalAnswer =
-        await readAIResponse(
-          response
+  // =========================================
+  // ASK AI
+  // =========================================
+
+  const handleAskAI =
+    async (
+      questionOverride?: string
+    ) => {
+      const currentQuestion =
+        questionOverride ?? question;
+
+      if (
+        !currentQuestion.trim()
+      ) {
+        return;
+      }
+
+      if (
+        documents.length === 0
+      ) {
+        setError(
+          "Please upload at least one document first."
         );
 
-      // -------------------------------------
-      // UPDATE ASSISTANT MESSAGE
-      // -------------------------------------
+        return;
+      }
 
-      const finalMessages =
-        messagesWithAssistant.map(
-          (message) =>
-            message.id ===
-            assistantId
-              ? {
-                  ...message,
-                  answer:
-                    finalAnswer,
-                }
-              : message
-        );
+      if (isAsking) {
+        return;
+      }
+
+      setError("");
+      setIsAsking(true);
+      setStreamLength(0);
+
+      const userQuestion =
+        currentQuestion.trim();
+
+      let conversationId =
+        activeConversationId;
+
+      if (!conversationId) {
+        conversationId =
+          createConversation(
+            userQuestion
+          );
+      }
+
+      const userMessage:
+        Message = {
+        id: crypto.randomUUID(),
+
+        role: "user",
+
+        content:
+          userQuestion,
+      };
+
+      const updatedMessages =
+        [
+          ...messages,
+          userMessage,
+        ];
 
       setMessages(
-        finalMessages
+        updatedMessages
+      );
+
+      setQuestion("");
+
+      const assistantId =
+        crypto.randomUUID();
+
+      const assistantMessage:
+        Message = {
+        id: assistantId,
+
+        role: "assistant",
+
+        answer:
+          createEmptyAnswer(),
+      };
+
+      const messagesWithAssistant =
+        [
+          ...updatedMessages,
+          assistantMessage,
+        ];
+
+      setMessages(
+        messagesWithAssistant
       );
 
       updateConversationMessages(
         conversationId,
-        finalMessages
+        messagesWithAssistant
       );
-    } catch (error) {
-      console.error(
-        "AI request failed:",
+
+      try {
+        const finalAnswer =
+          await requestAI(
+            userQuestion,
+            (
+              length
+            ) => {
+              setStreamLength(
+                length
+              );
+            }
+          );
+
+        const finalMessages =
+          messagesWithAssistant.map(
+            (
+              message
+            ) =>
+              message.id ===
+              assistantId
+                ? {
+                    ...message,
+                    answer:
+                      finalAnswer,
+                  }
+                : message
+          );
+
+        setMessages(
+          finalMessages
+        );
+
+        updateConversationMessages(
+          conversationId,
+          finalMessages
+        );
+      } catch (
         error
-      );
+      ) {
+        console.error(
+          "AI request failed:",
+          error
+        );
 
-      setMessages(
-        updatedMessages
-      );
+        setMessages(
+          updatedMessages
+        );
 
-      updateConversationMessages(
-        conversationId,
-        updatedMessages
-      );
+        updateConversationMessages(
+          conversationId,
+          updatedMessages
+        );
 
-      setError(
-        error instanceof Error
-          ? error.message
-          : "Something went wrong."
-      );
-    } finally {
-      setIsAsking(false);
-    }
-  };
+        setError(
+          error instanceof Error
+            ? error.message
+            : "Something went wrong."
+        );
+      } finally {
+        setIsAsking(false);
+        setStreamLength(0);
+      }
+    };
 
   // =========================================
   // REGENERATE
   // =========================================
 
-  const handleRegenerate = async (
-    assistantMessageId: string
-  ) => {
-    if (isAsking) {
-      return;
-    }
-
-    const assistantIndex =
-      messages.findIndex(
-        (message) =>
-          message.id ===
-          assistantMessageId
-      );
-
-    if (
-      assistantIndex === -1
-    ) {
-      return;
-    }
-
-    // ---------------------------------------
-    // FIND PREVIOUS USER QUESTION
-    // ---------------------------------------
-
-    let userQuestion =
-      "";
-
-    for (
-      let index =
-        assistantIndex - 1;
-      index >= 0;
-      index--
-    ) {
-      if (
-        messages[index].role ===
-        "user"
-      ) {
-        userQuestion =
-          messages[index]
-            .content || "";
-
-        break;
-      }
-    }
-
-    if (!userQuestion) {
-      setError(
-        "Could not find the question for this answer."
-      );
-
-      return;
-    }
-
-    if (
-      documents.length === 0
-    ) {
-      setError(
-        "Please upload at least one document first."
-      );
-
-      return;
-    }
-
-    setError("");
-    setIsAsking(true);
-
-    // ---------------------------------------
-    // CREATE NEW ASSISTANT MESSAGE
-    // ---------------------------------------
-
-    const newAssistantId =
-      crypto.randomUUID();
-
-    const temporaryMessages =
-      messages.map(
-        (message, index) =>
-          index === assistantIndex
-            ? {
-                id: newAssistantId,
-
-                role: "assistant" as const,
-
-                answer:
-                  createEmptyAnswer(),
-              }
-            : message
-      );
-
-    setMessages(
-      temporaryMessages
-    );
-
-    if (activeConversationId) {
-      updateConversationMessages(
-        activeConversationId,
-        temporaryMessages
-      );
-    }
-
-    try {
-      // -------------------------------------
-      // CALL API
-      // -------------------------------------
-
-      const response =
-        await fetch(
-          "/api/chat",
-          {
-            method: "POST",
-
-            headers: {
-              "Content-Type":
-                "application/json",
-            },
-
-            body: JSON.stringify({
-              question:
-                userQuestion,
-
-              documents:
-                documents.map(
-                  (document) => ({
-                    name:
-                      document.name,
-
-                    content:
-                      document.content,
-                  })
-                ),
-            }),
-          }
-        );
-
-      // -------------------------------------
-      // HANDLE API ERROR
-      // -------------------------------------
-
-      if (!response.ok) {
-        const errorText =
-          await response.text();
-
-        let errorMessage =
-          "Failed to regenerate answer.";
-
-        try {
-          const errorData =
-            JSON.parse(
-              errorText
-            );
-
-          errorMessage =
-            errorData.error ||
-            errorMessage;
-        } catch {
-          errorMessage =
-            errorText ||
-            errorMessage;
-        }
-
-        throw new Error(
-          errorMessage
-        );
+  const handleRegenerate =
+    async (
+      assistantMessageId: string
+    ) => {
+      if (isAsking) {
+        return;
       }
 
-      // -------------------------------------
-      // READ JSON
-      // -------------------------------------
-
-      const finalAnswer =
-        await readAIResponse(
-          response
-        );
-
-      // -------------------------------------
-      // UPDATE MESSAGE
-      // -------------------------------------
-
-      const finalMessages =
-        temporaryMessages.map(
-          (message) =>
+      const assistantIndex =
+        messages.findIndex(
+          (
+            message
+          ) =>
             message.id ===
-            newAssistantId
+            assistantMessageId
+        );
+
+      if (
+        assistantIndex === -1
+      ) {
+        return;
+      }
+
+      let userQuestion =
+        "";
+
+      for (
+        let index =
+          assistantIndex - 1;
+        index >= 0;
+        index--
+      ) {
+        if (
+          messages[index]
+            .role ===
+          "user"
+        ) {
+          userQuestion =
+            messages[index]
+              .content ||
+            "";
+
+          break;
+        }
+      }
+
+      if (!userQuestion) {
+        setError(
+          "Could not find the question for this answer."
+        );
+
+        return;
+      }
+
+      if (
+        documents.length === 0
+      ) {
+        setError(
+          "Please upload at least one document first."
+        );
+
+        return;
+      }
+
+      setError("");
+      setIsAsking(true);
+      setStreamLength(0);
+
+      const newAssistantId =
+        crypto.randomUUID();
+
+      const temporaryMessages =
+        messages.map(
+          (
+            message,
+            index
+          ) =>
+            index ===
+            assistantIndex
               ? {
-                  ...message,
+                  id:
+                    newAssistantId,
+
+                  role:
+                    "assistant" as const,
+
                   answer:
-                    finalAnswer,
+                    createEmptyAnswer(),
                 }
               : message
         );
 
       setMessages(
-        finalMessages
+        temporaryMessages
       );
 
-      if (activeConversationId) {
+      if (
+        activeConversationId
+      ) {
         updateConversationMessages(
           activeConversationId,
-          finalMessages
+          temporaryMessages
         );
       }
-    } catch (error) {
-      console.error(
-        "Regenerate failed:",
-        error
-      );
 
-      setError(
-        error instanceof Error
-          ? error.message
-          : "Failed to regenerate answer."
-      );
-    } finally {
-      setIsAsking(false);
-    }
-  };
+      try {
+        const finalAnswer =
+          await requestAI(
+            userQuestion,
+            (
+              length
+            ) => {
+              setStreamLength(
+                length
+              );
+            }
+          );
+
+        const finalMessages =
+          temporaryMessages.map(
+            (
+              message
+            ) =>
+              message.id ===
+              newAssistantId
+                ? {
+                    ...message,
+                    answer:
+                      finalAnswer,
+                  }
+                : message
+          );
+
+        setMessages(
+          finalMessages
+        );
+
+        if (
+          activeConversationId
+        ) {
+          updateConversationMessages(
+            activeConversationId,
+            finalMessages
+          );
+        }
+      } catch (
+        error
+      ) {
+        console.error(
+          "Regenerate failed:",
+          error
+        );
+
+        setError(
+          error instanceof Error
+            ? error.message
+            : "Failed to regenerate answer."
+        );
+      } finally {
+        setIsAsking(false);
+        setStreamLength(0);
+      }
+    };
 
   // =========================================
   // NEW CHAT
   // =========================================
 
-  const handleNewChat = () => {
-    if (isAsking) {
-      return;
-    }
+  const handleNewChat =
+    () => {
+      if (isAsking) {
+        return;
+      }
 
-    setMessages([]);
-
-    setQuestion("");
-
-    setError("");
-
-    setActiveConversationId(
-      null
-    );
-  };
+      setMessages([]);
+      setQuestion("");
+      setError("");
+      setActiveConversationId(
+        null
+      );
+    };
 
   // =========================================
   // SELECT CONVERSATION
@@ -1108,7 +1273,6 @@ export default function Home() {
       );
 
       setQuestion("");
-
       setError("");
     };
 
@@ -1127,7 +1291,9 @@ export default function Home() {
       setConversations(
         (current) =>
           current.filter(
-            (conversation) =>
+            (
+              conversation
+            ) =>
               conversation.id !==
               conversationId
           )
@@ -1142,38 +1308,39 @@ export default function Home() {
         );
 
         setMessages([]);
-
         setQuestion("");
-
         setError("");
       }
     };
 
   // =========================================
-  // ENTER KEY
+  // ENTER
   // =========================================
 
-  const handleKeyDown = (
-    event: React.KeyboardEvent<HTMLTextAreaElement>
-  ) => {
-    if (
-      event.key === "Enter" &&
-      !event.shiftKey
-    ) {
-      event.preventDefault();
+  const handleKeyDown =
+    (
+      event: React.KeyboardEvent<HTMLTextAreaElement>
+    ) => {
+      if (
+        event.key ===
+          "Enter" &&
+        !event.shiftKey
+      ) {
+        event.preventDefault();
 
-      handleAskAI();
-    }
-  };
+        handleAskAI();
+      }
+    };
 
   // =========================================
-  // COPY ANSWER
+  // COPY
   // =========================================
 
-  const handleCopy = async (
-    answer: StructuredAnswer
-  ) => {
-    const text = `
+  const handleCopy =
+    async (
+      answer: StructuredAnswer
+    ) => {
+      const text = `
 SUMMARY
 
 ${answer.summary}
@@ -1181,10 +1348,13 @@ ${answer.summary}
 KEY POINTS
 
 ${
-  answer.key_points.length > 0
+  answer.key_points.length >
+  0
     ? answer.key_points
         .map(
-          (point) =>
+          (
+            point
+          ) =>
             `• ${point}`
         )
         .join("\n")
@@ -1194,10 +1364,13 @@ ${
 RISKS & LIMITATIONS
 
 ${
-  answer.risks.length > 0
+  answer.risks.length >
+  0
     ? answer.risks
         .map(
-          (risk) =>
+          (
+            risk
+          ) =>
             `• ${risk}`
         )
         .join("\n")
@@ -1207,10 +1380,13 @@ ${
 SUGGESTED ACTIONS
 
 ${
-  answer.actions.length > 0
+  answer.actions.length >
+  0
     ? answer.actions
         .map(
-          (action) =>
+          (
+            action
+          ) =>
             `• ${action}`
         )
         .join("\n")
@@ -1218,268 +1394,276 @@ ${
 }
 `;
 
-    try {
-      await navigator.clipboard.writeText(
-        text.trim()
-      );
-    } catch (error) {
-      console.error(error);
+      try {
+        await navigator.clipboard.writeText(
+          text.trim()
+        );
+      } catch (
+        error
+      ) {
+        console.error(
+          error
+        );
 
-      setError(
-        "Could not copy the answer."
-      );
-    }
-  };
+        setError(
+          "Could not copy the answer."
+        );
+      }
+    };
 
   // =========================================
   // FILE SIZE
   // =========================================
 
-  const formatFileSize = (
-    bytes: number
-  ) => {
-    if (bytes < 1024) {
-      return `${bytes} B`;
-    }
+  const formatFileSize =
+    (
+      bytes: number
+    ) => {
+      if (
+        bytes < 1024
+      ) {
+        return `${bytes} B`;
+      }
 
-    if (
-      bytes <
-      1024 * 1024
-    ) {
+      if (
+        bytes <
+        1024 * 1024
+      ) {
+        return `${(
+          bytes / 1024
+        ).toFixed(1)} KB`;
+      }
+
       return `${(
-        bytes / 1024
-      ).toFixed(1)} KB`;
-    }
-
-    return `${(
-      bytes /
-      (1024 * 1024)
-    ).toFixed(1)} MB`;
-  };
+        bytes /
+        (1024 * 1024)
+      ).toFixed(1)} MB`;
+    };
 
   // =========================================
-  // STRUCTURED ANSWER UI
+  // ANSWER UI
   // =========================================
 
-  const renderAnswer = (
-    answer: StructuredAnswer,
-    messageId: string
-  ) => {
-    return (
-      <div className="space-y-4">
+  const renderAnswer =
+    (
+      answer: StructuredAnswer,
+      messageId: string
+    ) => {
+      return (
+        <div className="space-y-4">
 
-        {/* SUMMARY */}
+          {/* SUMMARY */}
 
-        <div className="rounded-xl border border-white/10 bg-white/[0.03] p-4">
+          <div className="rounded-xl border border-white/10 bg-white/[0.03] p-4">
 
-          <div className="mb-3 flex items-center gap-2">
+            <div className="mb-3 flex items-center gap-2">
+              <span className="text-lg">
+                ✨
+              </span>
 
-            <span className="text-lg">
-              ✨
-            </span>
-
-            <h4 className="font-semibold">
-              Summary
-            </h4>
-
-          </div>
-
-          {answer.summary ? (
-            <p className="text-sm leading-7 text-slate-300">
-              {answer.summary}
-            </p>
-          ) : (
-            <div className="text-sm text-slate-500">
-              No summary available.
+              <h4 className="font-semibold">
+                Summary
+              </h4>
             </div>
-          )}
 
-        </div>
-
-        {/* KEY POINTS */}
-
-        <div className="rounded-xl border border-white/10 bg-white/[0.03] p-4">
-
-          <div className="mb-3 flex items-center gap-2">
-
-            <span className="text-lg">
-              🔑
-            </span>
-
-            <h4 className="font-semibold">
-              Key Points
-            </h4>
+            {answer.summary ? (
+              <p className="text-sm leading-7 text-slate-300">
+                {
+                  answer.summary
+                }
+              </p>
+            ) : (
+              <div className="text-sm text-slate-500">
+                No summary available.
+              </div>
+            )}
 
           </div>
 
-          {answer.key_points.length >
-          0 ? (
-            <ul className="space-y-2">
+          {/* KEY POINTS */}
 
-              {answer.key_points.map(
-                (
-                  point,
-                  index
-                ) => (
-                  <li
-                    key={index}
-                    className="flex gap-3 text-sm leading-6 text-slate-300"
-                  >
+          <div className="rounded-xl border border-white/10 bg-white/[0.03] p-4">
 
-                    <span className="mt-1 text-blue-400">
-                      •
-                    </span>
+            <div className="mb-3 flex items-center gap-2">
+              <span className="text-lg">
+                🔑
+              </span>
 
-                    <span>
-                      {point}
-                    </span>
+              <h4 className="font-semibold">
+                Key Points
+              </h4>
+            </div>
 
-                  </li>
-                )
-              )}
+            {answer.key_points.length >
+            0 ? (
+              <ul className="space-y-2">
 
-            </ul>
-          ) : (
-            <p className="text-sm text-slate-500">
-              No key points available.
-            </p>
-          )}
+                {answer.key_points.map(
+                  (
+                    point,
+                    index
+                  ) => (
+                    <li
+                      key={
+                        index
+                      }
+                      className="flex gap-3 text-sm leading-6 text-slate-300"
+                    >
+                      <span className="mt-1 text-blue-400">
+                        •
+                      </span>
 
-        </div>
+                      <span>
+                        {point}
+                      </span>
+                    </li>
+                  )
+                )}
 
-        {/* RISKS */}
-
-        <div className="rounded-xl border border-white/10 bg-white/[0.03] p-4">
-
-          <div className="mb-3 flex items-center gap-2">
-
-            <span className="text-lg">
-              ⚠️
-            </span>
-
-            <h4 className="font-semibold">
-              Risks & Limitations
-            </h4>
+              </ul>
+            ) : (
+              <p className="text-sm text-slate-500">
+                No key points available.
+              </p>
+            )}
 
           </div>
 
-          {answer.risks.length >
-          0 ? (
-            <ul className="space-y-2">
+          {/* RISKS */}
 
-              {answer.risks.map(
-                (
-                  risk,
-                  index
-                ) => (
-                  <li
-                    key={index}
-                    className="flex gap-3 text-sm leading-6 text-slate-300"
-                  >
+          <div className="rounded-xl border border-white/10 bg-white/[0.03] p-4">
 
-                    <span className="mt-1">
-                      •
-                    </span>
+            <div className="mb-3 flex items-center gap-2">
+              <span className="text-lg">
+                ⚠️
+              </span>
 
-                    <span>
-                      {risk}
-                    </span>
+              <h4 className="font-semibold">
+                Risks & Limitations
+              </h4>
+            </div>
 
-                  </li>
-                )
-              )}
+            {answer.risks.length >
+            0 ? (
+              <ul className="space-y-2">
 
-            </ul>
-          ) : (
-            <p className="text-sm text-slate-500">
-              No risks or limitations identified.
-            </p>
-          )}
+                {answer.risks.map(
+                  (
+                    risk,
+                    index
+                  ) => (
+                    <li
+                      key={
+                        index
+                      }
+                      className="flex gap-3 text-sm leading-6 text-slate-300"
+                    >
+                      <span>
+                        •
+                      </span>
 
-        </div>
+                      <span>
+                        {risk}
+                      </span>
+                    </li>
+                  )
+                )}
 
-        {/* ACTIONS */}
-
-        <div className="rounded-xl border border-white/10 bg-white/[0.03] p-4">
-
-          <div className="mb-3 flex items-center gap-2">
-
-            <span className="text-lg">
-              ✓
-            </span>
-
-            <h4 className="font-semibold">
-              Suggested Actions
-            </h4>
+              </ul>
+            ) : (
+              <p className="text-sm text-slate-500">
+                No risks or limitations identified.
+              </p>
+            )}
 
           </div>
 
-          {answer.actions.length >
-          0 ? (
-            <ul className="space-y-2">
+          {/* ACTIONS */}
 
-              {answer.actions.map(
-                (
-                  action,
-                  index
-                ) => (
-                  <li
-                    key={index}
-                    className="flex gap-3 text-sm leading-6 text-slate-300"
-                  >
+          <div className="rounded-xl border border-white/10 bg-white/[0.03] p-4">
 
-                    <span className="mt-1 text-green-400">
-                      •
-                    </span>
+            <div className="mb-3 flex items-center gap-2">
+              <span className="text-lg">
+                ✓
+              </span>
 
-                    <span>
-                      {action}
-                    </span>
+              <h4 className="font-semibold">
+                Suggested Actions
+              </h4>
+            </div>
 
-                  </li>
+            {answer.actions.length >
+            0 ? (
+              <ul className="space-y-2">
+
+                {answer.actions.map(
+                  (
+                    action,
+                    index
+                  ) => (
+                    <li
+                      key={
+                        index
+                      }
+                      className="flex gap-3 text-sm leading-6 text-slate-300"
+                    >
+                      <span className="mt-1 text-green-400">
+                        •
+                      </span>
+
+                      <span>
+                        {action}
+                      </span>
+                    </li>
+                  )
+                )}
+
+              </ul>
+            ) : (
+              <p className="text-sm text-slate-500">
+                No suggested actions.
+              </p>
+            )}
+
+          </div>
+
+          {/* ACTION BUTTONS */}
+
+          <div className="flex gap-2 pt-1">
+
+            <button
+              onClick={() =>
+                handleCopy(
+                  answer
                 )
-              )}
+              }
+              disabled={
+                isAsking
+              }
+              className="rounded-md px-3 py-1.5 text-xs text-slate-400 transition hover:bg-white/5 hover:text-white disabled:opacity-40"
+            >
+              ⧉ Copy
+            </button>
 
-            </ul>
-          ) : (
-            <p className="text-sm text-slate-500">
-              No suggested actions.
-            </p>
-          )}
+            <button
+              onClick={() =>
+                handleRegenerate(
+                  messageId
+                )
+              }
+              disabled={
+                isAsking
+              }
+              className="rounded-md px-3 py-1.5 text-xs text-slate-400 transition hover:bg-white/5 hover:text-white disabled:opacity-40"
+            >
+              ↻ Regenerate
+            </button>
 
-        </div>
-
-        {/* ACTION BUTTONS */}
-
-        <div className="flex gap-2 pt-1">
-
-          <button
-            onClick={() =>
-              handleCopy(answer)
-            }
-            disabled={isAsking}
-            className="rounded-md px-3 py-1.5 text-xs text-slate-400 transition hover:bg-white/5 hover:text-white disabled:opacity-40"
-          >
-            ⧉ Copy
-          </button>
-
-          <button
-            onClick={() =>
-              handleRegenerate(
-                messageId
-              )
-            }
-            disabled={isAsking}
-            className="rounded-md px-3 py-1.5 text-xs text-slate-400 transition hover:bg-white/5 hover:text-white disabled:opacity-40"
-          >
-            ↻ Regenerate
-          </button>
+          </div>
 
         </div>
-
-      </div>
-    );
-  };
+      );
+    };
 
   // =========================================
   // UI
@@ -1493,7 +1677,9 @@ ${
         {/* FILE INPUT */}
 
         <input
-          ref={fileInputRef}
+          ref={
+            fileInputRef
+          }
           type="file"
           accept=".pdf,application/pdf"
           multiple
@@ -1507,8 +1693,6 @@ ${
 
         <aside className="hidden w-80 shrink-0 border-r border-white/10 bg-slate-900 md:flex md:flex-col">
 
-          {/* BRAND */}
-
           <div className="border-b border-white/10 p-5">
 
             <h1 className="text-lg font-semibold">
@@ -1521,23 +1705,21 @@ ${
 
           </div>
 
-          {/* NEW CHAT */}
-
           <div className="p-4">
 
             <button
               onClick={
                 handleNewChat
               }
-              disabled={isAsking}
+              disabled={
+                isAsking
+              }
               className="w-full rounded-lg border border-white/10 bg-white/[0.03] px-4 py-2.5 text-sm font-medium transition hover:bg-white/10 disabled:opacity-40"
             >
               + New chat
             </button>
 
           </div>
-
-          {/* CONVERSATION HISTORY */}
 
           <div className="min-h-0 flex-1 overflow-y-auto px-4">
 
@@ -1557,7 +1739,6 @@ ${
                   (
                     conversation
                   ) => (
-
                     <div
                       key={
                         conversation.id
@@ -1615,7 +1796,6 @@ ${
                       </button>
 
                     </div>
-
                   )
                 )}
 
@@ -1656,7 +1836,9 @@ ${
               <div className="space-y-2">
 
                 {documents.map(
-                  (document) => (
+                  (
+                    document
+                  ) => (
                     <div
                       key={
                         document.id
@@ -1691,8 +1873,6 @@ ${
                           </p>
 
                         </div>
-
-                        {/* DELETE DOCUMENT */}
 
                         <button
                           onClick={() =>
@@ -1744,8 +1924,6 @@ ${
 
             <div className="flex items-center gap-2">
 
-              {/* MOBILE UPLOAD */}
-
               <button
                 onClick={
                   handleUploadClick
@@ -1765,7 +1943,9 @@ ${
                 onClick={
                   handleNewChat
                 }
-                disabled={isAsking}
+                disabled={
+                  isAsking
+                }
                 className="rounded-lg border border-white/10 px-3 py-2 text-sm transition hover:bg-white/5 disabled:opacity-40"
               >
                 + New chat
@@ -1784,7 +1964,9 @@ ${
               <div className="flex gap-2 overflow-x-auto">
 
                 {documents.map(
-                  (document) => (
+                  (
+                    document
+                  ) => (
                     <div
                       key={
                         document.id
@@ -1801,8 +1983,6 @@ ${
                           document.name
                         }
                       </span>
-
-                      {/* MOBILE DELETE */}
 
                       <button
                         onClick={() =>
@@ -1886,7 +2066,9 @@ ${
               <div className="mx-auto max-w-4xl space-y-6">
 
                 {messages.map(
-                  (message) => (
+                  (
+                    message
+                  ) => (
 
                     <div
                       key={
@@ -1904,11 +2086,9 @@ ${
                       "user" ? (
 
                         <div className="max-w-[85%] rounded-2xl bg-blue-600 px-4 py-3 text-sm leading-6">
-
                           {
                             message.content
                           }
-
                         </div>
 
                       ) : (
@@ -1926,7 +2106,6 @@ ${
                       )}
 
                     </div>
-
                   )
                 )}
 
@@ -1936,18 +2115,31 @@ ${
 
                     <div className="rounded-2xl border border-white/10 bg-slate-900 px-5 py-4 text-sm text-slate-400">
 
-                      <span className="animate-pulse">
-                        AI is researching...
-                      </span>
+                      <div className="flex items-center gap-2">
+
+                        <span className="animate-pulse">
+                          ✦
+                        </span>
+
+                        <span>
+                          AI is researching...
+                        </span>
+
+                      </div>
+
+                      {streamLength >
+                        0 && (
+                        <p className="mt-2 text-xs text-slate-600">
+                          Receiving AI response...
+                        </p>
+                      )}
 
                     </div>
 
                   </div>
-
                 )}
 
               </div>
-
             )}
 
           </div>
@@ -1959,13 +2151,10 @@ ${
             <div className="mx-auto w-full max-w-4xl px-4 pb-2">
 
               <div className="rounded-lg border border-red-500/20 bg-red-500/10 px-4 py-3 text-sm text-red-300">
-
                 {error}
-
               </div>
 
             </div>
-
           )}
 
           {/* INPUT */}

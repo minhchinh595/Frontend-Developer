@@ -27,9 +27,7 @@ function cleanString(value: unknown): string {
 // CLEAN STRING ARRAY
 // =========================================
 
-function cleanStringArray(
-  value: unknown
-): string[] {
+function cleanStringArray(value: unknown): string[] {
   if (!Array.isArray(value)) {
     return [];
   }
@@ -40,24 +38,17 @@ function cleanStringArray(
         typeof item === "string"
     )
     .map((item) => item.trim())
-    .filter(
-      (item) => item.length > 0
-    );
+    .filter((item) => item.length > 0);
 }
 
 // =========================================
-// EXTRACT JSON FROM AI RESPONSE
+// EXTRACT JSON
 // =========================================
 
-function extractJSON(
-  content: string
-): unknown {
+function extractJSON(content: string): unknown {
   let text = content.trim();
 
-  // -----------------------------------------
-  // REMOVE MARKDOWN CODE BLOCK
-  // -----------------------------------------
-
+  // Remove markdown code block if AI returns it
   if (text.startsWith("```")) {
     text = text
       .replace(/^```(?:json)?/i, "")
@@ -65,43 +56,31 @@ function extractJSON(
       .trim();
   }
 
-  // -----------------------------------------
-  // DIRECT JSON PARSE
-  // -----------------------------------------
-
+  // Try parsing the whole response
   try {
     return JSON.parse(text);
   } catch {
-    // Continue below
+    // Continue
   }
 
-  // -----------------------------------------
-  // FIND JSON OBJECT
-  // -----------------------------------------
-
-  const firstBrace =
-    text.indexOf("{");
-
-  const lastBrace =
-    text.lastIndexOf("}");
+  // Try extracting JSON object
+  const firstBrace = text.indexOf("{");
+  const lastBrace = text.lastIndexOf("}");
 
   if (
     firstBrace !== -1 &&
     lastBrace !== -1 &&
     lastBrace > firstBrace
   ) {
-    const possibleJSON =
-      text.substring(
-        firstBrace,
-        lastBrace + 1
-      );
+    const possibleJSON = text.substring(
+      firstBrace,
+      lastBrace + 1
+    );
 
     try {
-      return JSON.parse(
-        possibleJSON
-      );
+      return JSON.parse(possibleJSON);
     } catch {
-      // Continue below
+      // Continue
     }
   }
 
@@ -128,10 +107,7 @@ function normalizeAIAnswer(
   }
 
   const object =
-    parsed as Record<
-      string,
-      unknown
-    >;
+    parsed as Record<string, unknown>;
 
   return {
     summary: cleanString(
@@ -304,7 +280,6 @@ IMPORTANT:
 - actions must be an array of strings.
 - NEVER omit any property.
 - NEVER return null.
-- NEVER return ":" as a property value.
 - NEVER add extra properties.
 - If there are no risks, return "risks": [].
 - If there are no actions, return "actions": [].
@@ -359,31 +334,36 @@ Use ONLY the uploaded documents.
 `;
 
     console.log(
-      "Starting AI request..."
+      "Starting STREAMING AI request..."
     );
 
     // =======================================
-    // CALL GROQ
+    // CALL GROQ WITH STREAMING
     // =======================================
 
-    const completion =
-      await groq.chat.completions.create(
-        {
-          model:
-            "openai/gpt-oss-20b",
+    const stream =
+      await groq.chat.completions.create({
+        model:
+          "openai/gpt-oss-20b",
 
-          temperature: 0,
+        temperature: 0,
 
-          messages: [
-            {
-              role: "system",
-              content:
-                systemPrompt,
-            },
+        stream: true,
 
-            {
-              role: "user",
-              content: `
+        // Force the model to return JSON
+        response_format: {
+          type: "json_object",
+        },
+
+        messages: [
+          {
+            role: "system",
+            content: systemPrompt,
+          },
+
+          {
+            role: "user",
+            content: `
 UPLOADED DOCUMENTS:
 
 ${limitedContext}
@@ -411,72 +391,75 @@ If risks are empty:
 If actions are empty:
 "actions": []
 `,
-            },
-          ],
-        }
-      );
+          },
+        ],
+      });
 
     // =======================================
-    // GET AI RESPONSE
+    // CREATE STREAM
     // =======================================
 
-    const content =
-      completion.choices[0]
-        ?.message?.content;
+    const encoder =
+      new TextEncoder();
 
-    if (!content) {
-      throw new Error(
-        "The AI returned an empty response."
-      );
-    }
+    const readableStream =
+      new ReadableStream({
+        async start(controller) {
+          try {
+            for await (
+              const chunk of stream
+            ) {
+              const content =
+                chunk.choices[0]
+                  ?.delta?.content;
 
-    console.log(
-      "AI response received."
-    );
+              if (content) {
+                controller.enqueue(
+                  encoder.encode(
+                    content
+                  )
+                );
+              }
+            }
 
-    console.log(
-      "AI raw response:",
-      content
-    );
+            console.log(
+              "Streaming AI response completed."
+            );
 
-    // =======================================
-    // PARSE JSON
-    // =======================================
+            controller.close();
+          } catch (error) {
+            console.error(
+              "Streaming error:",
+              error
+            );
 
-    const parsed =
-      extractJSON(content);
-
-    if (!parsed) {
-      console.error(
-        "Could not extract valid JSON from AI response:",
-        content
-      );
-
-      throw new Error(
-        "The AI returned invalid JSON."
-      );
-    }
-
-    // =======================================
-    // NORMALIZE
-    // =======================================
-
-    const result =
-      normalizeAIAnswer(
-        parsed
-      );
-
-    console.log(
-      "Normalized AI result:",
-      result
-    );
+            controller.error(
+              error
+            );
+          }
+        },
+      });
 
     // =======================================
-    // RETURN RESULT
+    // RETURN STREAM
     // =======================================
 
-    return Response.json(
-      result
+    return new Response(
+      readableStream,
+      {
+        status: 200,
+
+        headers: {
+          "Content-Type":
+            "text/plain; charset=utf-8",
+
+          "Cache-Control":
+            "no-cache, no-transform",
+
+          "X-Accel-Buffering":
+            "no",
+        },
+      }
     );
   } catch (error) {
     console.error(
@@ -484,7 +467,7 @@ If actions are empty:
     );
 
     console.error(
-      "GROQ API ERROR:"
+      "GROQ STREAMING API ERROR:"
     );
 
     console.error(error);
