@@ -36,8 +36,7 @@ type Conversation = {
   messages: Message[];
 };
 
-const STORAGE_KEY =
-  "research-ai-conversations";
+const STORAGE_KEY = "research-ai-conversations";
 
 const ACTIVE_CONVERSATION_KEY =
   "research-ai-active-conversation";
@@ -72,47 +71,37 @@ const normalizeAnswer = (
 
   return {
     summary:
-      typeof parsed.summary ===
-      "string"
+      typeof parsed.summary === "string"
         ? parsed.summary
         : "",
 
     key_points:
-      Array.isArray(
-        parsed.key_points
-      )
+      Array.isArray(parsed.key_points)
         ? parsed.key_points.filter(
             (
               item
             ): item is string =>
-              typeof item ===
-              "string"
+              typeof item === "string"
           )
         : [],
 
     risks:
-      Array.isArray(
-        parsed.risks
-      )
+      Array.isArray(parsed.risks)
         ? parsed.risks.filter(
             (
               item
             ): item is string =>
-              typeof item ===
-              "string"
+              typeof item === "string"
           )
         : [],
 
     actions:
-      Array.isArray(
-        parsed.actions
-      )
+      Array.isArray(parsed.actions)
         ? parsed.actions.filter(
             (
               item
             ): item is string =>
-              typeof item ===
-              "string"
+              typeof item === "string"
           )
         : [],
   };
@@ -130,9 +119,7 @@ const readAIResponse =
       const data =
         await response.json();
 
-      return normalizeAnswer(
-        data
-      );
+      return normalizeAnswer(data);
     } catch (error) {
       console.error(
         "Unable to parse AI response:",
@@ -175,19 +162,15 @@ export default function Home() {
     setActiveConversationId,
   ] = useState<string | null>(null);
 
-  // =========================================
-  // STORAGE READY
-  // =========================================
-  //
-  // Quan trọng:
-  // Không cho các effect SAVE chạy trước
-  // khi dữ liệu từ localStorage được LOAD xong.
-  //
-  const [isStorageLoaded, setIsStorageLoaded] =
-    useState(false);
+  // Prevent localStorage save effects
+  // from running before initial data is loaded.
+  const [
+    isStorageLoaded,
+    setIsStorageLoaded,
+  ] = useState(false);
 
   // =========================================
-  // LOAD ALL DATA FROM LOCAL STORAGE
+  // LOAD DATA FROM LOCAL STORAGE
   // =========================================
 
   useEffect(() => {
@@ -211,11 +194,12 @@ export default function Home() {
               savedConversations
             );
 
-          if (
-            Array.isArray(parsed)
-          ) {
+          if (Array.isArray(parsed)) {
             parsedConversations =
               parsed;
+            setConversations(
+              parsedConversations
+            );
           }
         } catch (error) {
           console.error(
@@ -226,52 +210,7 @@ export default function Home() {
       }
 
       // ---------------------------------------
-      // LOAD DOCUMENTS
-      // ---------------------------------------
-
-      const savedDocuments =
-        localStorage.getItem(
-          DOCUMENTS_STORAGE_KEY
-        );
-
-      let parsedDocuments:
-        DocumentItem[] = [];
-
-      if (savedDocuments) {
-        try {
-          const parsed =
-            JSON.parse(
-              savedDocuments
-            );
-
-          if (
-            Array.isArray(parsed)
-          ) {
-            parsedDocuments =
-              parsed;
-          }
-        } catch (error) {
-          console.error(
-            "Failed to parse documents:",
-            error
-          );
-        }
-      }
-
-      // ---------------------------------------
-      // RESTORE STATE
-      // ---------------------------------------
-
-      setConversations(
-        parsedConversations
-      );
-
-      setDocuments(
-        parsedDocuments
-      );
-
-      // ---------------------------------------
-      // RESTORE ACTIVE CONVERSATION
+      // LOAD ACTIVE CONVERSATION
       // ---------------------------------------
 
       const savedActiveId =
@@ -297,75 +236,66 @@ export default function Home() {
           setMessages(
             activeConversation.messages
           );
-        } else {
-          // Active ID không còn tồn tại
-          localStorage.removeItem(
-            ACTIVE_CONVERSATION_KEY
-          );
+        }
+      } else if (
+        parsedConversations.length >
+        0
+      ) {
+        const latestConversation =
+          parsedConversations[0];
 
-          // Nếu vẫn còn conversation,
-          // mở conversation mới nhất
+        setActiveConversationId(
+          latestConversation.id
+        );
+
+        setMessages(
+          latestConversation.messages
+        );
+
+        localStorage.setItem(
+          ACTIVE_CONVERSATION_KEY,
+          latestConversation.id
+        );
+      }
+
+      // ---------------------------------------
+      // LOAD DOCUMENTS
+      // ---------------------------------------
+
+      const savedDocuments =
+        localStorage.getItem(
+          DOCUMENTS_STORAGE_KEY
+        );
+
+      if (savedDocuments) {
+        try {
+          const parsedDocuments =
+            JSON.parse(
+              savedDocuments
+            );
+
           if (
-            parsedConversations.length >
-            0
+            Array.isArray(
+              parsedDocuments
+            )
           ) {
-            const latestConversation =
-              parsedConversations[0];
-
-            setActiveConversationId(
-              latestConversation.id
-            );
-
-            setMessages(
-              latestConversation.messages
-            );
-
-            localStorage.setItem(
-              ACTIVE_CONVERSATION_KEY,
-              latestConversation.id
+            setDocuments(
+              parsedDocuments
             );
           }
-        }
-      } else {
-        // -------------------------------------
-        // FALLBACK:
-        // OPEN MOST RECENT CONVERSATION
-        // -------------------------------------
-
-        if (
-          parsedConversations.length >
-          0
-        ) {
-          const latestConversation =
-            parsedConversations[0];
-
-          setActiveConversationId(
-            latestConversation.id
-          );
-
-          setMessages(
-            latestConversation.messages
-          );
-
-          localStorage.setItem(
-            ACTIVE_CONVERSATION_KEY,
-            latestConversation.id
+        } catch (error) {
+          console.error(
+            "Failed to parse documents:",
+            error
           );
         }
       }
     } catch (error) {
       console.error(
-        "Failed to load application data:",
+        "Failed to load localStorage data:",
         error
       );
     } finally {
-      // ---------------------------------------
-      // QUAN TRỌNG
-      // ---------------------------------------
-      //
-      // Chỉ sau khi LOAD xong mới cho phép
-      // các effect SAVE hoạt động.
-      //
       setIsStorageLoaded(true);
     }
   }, []);
@@ -375,7 +305,6 @@ export default function Home() {
   // =========================================
 
   useEffect(() => {
-    // Không save khi app chưa load xong
     if (!isStorageLoaded) {
       return;
     }
@@ -403,7 +332,6 @@ export default function Home() {
   // =========================================
 
   useEffect(() => {
-    // Không save khi app chưa load xong
     if (!isStorageLoaded) {
       return;
     }
@@ -435,7 +363,6 @@ export default function Home() {
   // =========================================
 
   useEffect(() => {
-    // Không save khi app chưa load xong
     if (!isStorageLoaded) {
       return;
     }
@@ -449,12 +376,6 @@ export default function Home() {
       console.error(
         "Failed to save documents:",
         error
-      );
-
-      // localStorage có thể bị đầy nếu
-      // document chứa quá nhiều text.
-      setError(
-        "Could not save documents locally. The browser storage may be full."
       );
     }
   }, [
@@ -581,6 +502,49 @@ export default function Home() {
 
       event.target.value = "";
     }
+  };
+
+  // =========================================
+  // DELETE DOCUMENT
+  // =========================================
+
+  const handleDeleteDocument = (
+    documentId: string
+  ) => {
+    if (isAsking) {
+      return;
+    }
+
+    const documentToDelete =
+      documents.find(
+        (document) =>
+          document.id ===
+          documentId
+      );
+
+    if (!documentToDelete) {
+      return;
+    }
+
+    const confirmed =
+      window.confirm(
+        `Delete "${documentToDelete.name}"?`
+      );
+
+    if (!confirmed) {
+      return;
+    }
+
+    setDocuments(
+      (current) =>
+        current.filter(
+          (document) =>
+            document.id !==
+            documentId
+        )
+    );
+
+    setError("");
   };
 
   // =========================================
@@ -1697,7 +1661,7 @@ ${
                       key={
                         document.id
                       }
-                      className="rounded-lg border border-white/5 bg-white/[0.03] p-3"
+                      className="group rounded-lg border border-white/5 bg-white/[0.03] p-3"
                     >
 
                       <div className="flex items-start gap-2">
@@ -1727,6 +1691,23 @@ ${
                           </p>
 
                         </div>
+
+                        {/* DELETE DOCUMENT */}
+
+                        <button
+                          onClick={() =>
+                            handleDeleteDocument(
+                              document.id
+                            )
+                          }
+                          disabled={
+                            isAsking
+                          }
+                          title="Delete document"
+                          className="shrink-0 rounded p-1 text-xs text-slate-600 opacity-0 transition hover:bg-white/10 hover:text-red-400 group-hover:opacity-100 disabled:opacity-20"
+                        >
+                          ×
+                        </button>
 
                       </div>
 
@@ -1808,7 +1789,7 @@ ${
                       key={
                         document.id
                       }
-                      className="flex shrink-0 items-center gap-2 rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2"
+                      className="group flex shrink-0 items-center gap-2 rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2"
                     >
 
                       <span>
@@ -1820,6 +1801,23 @@ ${
                           document.name
                         }
                       </span>
+
+                      {/* MOBILE DELETE */}
+
+                      <button
+                        onClick={() =>
+                          handleDeleteDocument(
+                            document.id
+                          )
+                        }
+                        disabled={
+                          isAsking
+                        }
+                        title="Delete document"
+                        className="ml-1 rounded px-1 text-xs text-slate-500 transition hover:bg-white/10 hover:text-red-400 disabled:opacity-20"
+                      >
+                        ×
+                      </button>
 
                     </div>
                   )
