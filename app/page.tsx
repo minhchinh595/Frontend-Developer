@@ -1,6 +1,10 @@
 "use client";
 
-import { useRef, useState } from "react";
+import {
+  useEffect,
+  useRef,
+  useState,
+} from "react";
 
 type DocumentItem = {
   id: string;
@@ -25,6 +29,122 @@ type Message = {
   answer?: StructuredAnswer;
 };
 
+type Conversation = {
+  id: string;
+  title: string;
+  createdAt: number;
+  messages: Message[];
+};
+
+const STORAGE_KEY =
+  "research-ai-conversations";
+
+const ACTIVE_CONVERSATION_KEY =
+  "research-ai-active-conversation";
+
+const DOCUMENTS_STORAGE_KEY =
+  "research-ai-documents";
+
+const createEmptyAnswer =
+  (): StructuredAnswer => ({
+    summary: "",
+    key_points: [],
+    risks: [],
+    actions: [],
+  });
+
+// =========================================
+// NORMALIZE AI ANSWER
+// =========================================
+
+const normalizeAnswer = (
+  data: unknown
+): StructuredAnswer => {
+  if (
+    !data ||
+    typeof data !== "object"
+  ) {
+    return createEmptyAnswer();
+  }
+
+  const parsed =
+    data as Record<string, unknown>;
+
+  return {
+    summary:
+      typeof parsed.summary ===
+      "string"
+        ? parsed.summary
+        : "",
+
+    key_points:
+      Array.isArray(
+        parsed.key_points
+      )
+        ? parsed.key_points.filter(
+            (
+              item
+            ): item is string =>
+              typeof item ===
+              "string"
+          )
+        : [],
+
+    risks:
+      Array.isArray(
+        parsed.risks
+      )
+        ? parsed.risks.filter(
+            (
+              item
+            ): item is string =>
+              typeof item ===
+              "string"
+          )
+        : [],
+
+    actions:
+      Array.isArray(
+        parsed.actions
+      )
+        ? parsed.actions.filter(
+            (
+              item
+            ): item is string =>
+              typeof item ===
+              "string"
+          )
+        : [],
+  };
+};
+
+// =========================================
+// READ JSON RESPONSE
+// =========================================
+
+const readAIResponse =
+  async (
+    response: Response
+  ): Promise<StructuredAnswer> => {
+    try {
+      const data =
+        await response.json();
+
+      return normalizeAnswer(
+        data
+      );
+    } catch (error) {
+      console.error(
+        "Unable to parse AI response:",
+        error
+      );
+
+      throw new Error(
+        "The AI returned an invalid response."
+      );
+    }
+  };
+
 export default function Home() {
   const fileInputRef =
     useRef<HTMLInputElement>(null);
@@ -47,6 +167,301 @@ export default function Home() {
   const [error, setError] =
     useState("");
 
+  const [conversations, setConversations] =
+    useState<Conversation[]>([]);
+
+  const [
+    activeConversationId,
+    setActiveConversationId,
+  ] = useState<string | null>(null);
+
+  // =========================================
+  // STORAGE READY
+  // =========================================
+  //
+  // Quan trọng:
+  // Không cho các effect SAVE chạy trước
+  // khi dữ liệu từ localStorage được LOAD xong.
+  //
+  const [isStorageLoaded, setIsStorageLoaded] =
+    useState(false);
+
+  // =========================================
+  // LOAD ALL DATA FROM LOCAL STORAGE
+  // =========================================
+
+  useEffect(() => {
+    try {
+      // ---------------------------------------
+      // LOAD CONVERSATIONS
+      // ---------------------------------------
+
+      const savedConversations =
+        localStorage.getItem(
+          STORAGE_KEY
+        );
+
+      let parsedConversations:
+        Conversation[] = [];
+
+      if (savedConversations) {
+        try {
+          const parsed =
+            JSON.parse(
+              savedConversations
+            );
+
+          if (
+            Array.isArray(parsed)
+          ) {
+            parsedConversations =
+              parsed;
+          }
+        } catch (error) {
+          console.error(
+            "Failed to parse conversations:",
+            error
+          );
+        }
+      }
+
+      // ---------------------------------------
+      // LOAD DOCUMENTS
+      // ---------------------------------------
+
+      const savedDocuments =
+        localStorage.getItem(
+          DOCUMENTS_STORAGE_KEY
+        );
+
+      let parsedDocuments:
+        DocumentItem[] = [];
+
+      if (savedDocuments) {
+        try {
+          const parsed =
+            JSON.parse(
+              savedDocuments
+            );
+
+          if (
+            Array.isArray(parsed)
+          ) {
+            parsedDocuments =
+              parsed;
+          }
+        } catch (error) {
+          console.error(
+            "Failed to parse documents:",
+            error
+          );
+        }
+      }
+
+      // ---------------------------------------
+      // RESTORE STATE
+      // ---------------------------------------
+
+      setConversations(
+        parsedConversations
+      );
+
+      setDocuments(
+        parsedDocuments
+      );
+
+      // ---------------------------------------
+      // RESTORE ACTIVE CONVERSATION
+      // ---------------------------------------
+
+      const savedActiveId =
+        localStorage.getItem(
+          ACTIVE_CONVERSATION_KEY
+        );
+
+      if (savedActiveId) {
+        const activeConversation =
+          parsedConversations.find(
+            (
+              conversation
+            ) =>
+              conversation.id ===
+              savedActiveId
+          );
+
+        if (activeConversation) {
+          setActiveConversationId(
+            activeConversation.id
+          );
+
+          setMessages(
+            activeConversation.messages
+          );
+        } else {
+          // Active ID không còn tồn tại
+          localStorage.removeItem(
+            ACTIVE_CONVERSATION_KEY
+          );
+
+          // Nếu vẫn còn conversation,
+          // mở conversation mới nhất
+          if (
+            parsedConversations.length >
+            0
+          ) {
+            const latestConversation =
+              parsedConversations[0];
+
+            setActiveConversationId(
+              latestConversation.id
+            );
+
+            setMessages(
+              latestConversation.messages
+            );
+
+            localStorage.setItem(
+              ACTIVE_CONVERSATION_KEY,
+              latestConversation.id
+            );
+          }
+        }
+      } else {
+        // -------------------------------------
+        // FALLBACK:
+        // OPEN MOST RECENT CONVERSATION
+        // -------------------------------------
+
+        if (
+          parsedConversations.length >
+          0
+        ) {
+          const latestConversation =
+            parsedConversations[0];
+
+          setActiveConversationId(
+            latestConversation.id
+          );
+
+          setMessages(
+            latestConversation.messages
+          );
+
+          localStorage.setItem(
+            ACTIVE_CONVERSATION_KEY,
+            latestConversation.id
+          );
+        }
+      }
+    } catch (error) {
+      console.error(
+        "Failed to load application data:",
+        error
+      );
+    } finally {
+      // ---------------------------------------
+      // QUAN TRỌNG
+      // ---------------------------------------
+      //
+      // Chỉ sau khi LOAD xong mới cho phép
+      // các effect SAVE hoạt động.
+      //
+      setIsStorageLoaded(true);
+    }
+  }, []);
+
+  // =========================================
+  // SAVE CONVERSATIONS
+  // =========================================
+
+  useEffect(() => {
+    // Không save khi app chưa load xong
+    if (!isStorageLoaded) {
+      return;
+    }
+
+    try {
+      localStorage.setItem(
+        STORAGE_KEY,
+        JSON.stringify(
+          conversations
+        )
+      );
+    } catch (error) {
+      console.error(
+        "Failed to save conversations:",
+        error
+      );
+    }
+  }, [
+    conversations,
+    isStorageLoaded,
+  ]);
+
+  // =========================================
+  // SAVE ACTIVE CONVERSATION
+  // =========================================
+
+  useEffect(() => {
+    // Không save khi app chưa load xong
+    if (!isStorageLoaded) {
+      return;
+    }
+
+    try {
+      if (activeConversationId) {
+        localStorage.setItem(
+          ACTIVE_CONVERSATION_KEY,
+          activeConversationId
+        );
+      } else {
+        localStorage.removeItem(
+          ACTIVE_CONVERSATION_KEY
+        );
+      }
+    } catch (error) {
+      console.error(
+        "Failed to save active conversation:",
+        error
+      );
+    }
+  }, [
+    activeConversationId,
+    isStorageLoaded,
+  ]);
+
+  // =========================================
+  // SAVE DOCUMENTS
+  // =========================================
+
+  useEffect(() => {
+    // Không save khi app chưa load xong
+    if (!isStorageLoaded) {
+      return;
+    }
+
+    try {
+      localStorage.setItem(
+        DOCUMENTS_STORAGE_KEY,
+        JSON.stringify(documents)
+      );
+    } catch (error) {
+      console.error(
+        "Failed to save documents:",
+        error
+      );
+
+      // localStorage có thể bị đầy nếu
+      // document chứa quá nhiều text.
+      setError(
+        "Could not save documents locally. The browser storage may be full."
+      );
+    }
+  }, [
+    documents,
+    isStorageLoaded,
+  ]);
+
   // =========================================
   // OPEN FILE SELECTOR
   // =========================================
@@ -62,9 +477,13 @@ export default function Home() {
   const handleFileChange = async (
     event: React.ChangeEvent<HTMLInputElement>
   ) => {
-    const files = event.target.files;
+    const files =
+      event.target.files;
 
-    if (!files || files.length === 0) {
+    if (
+      !files ||
+      files.length === 0
+    ) {
       return;
     }
 
@@ -72,9 +491,13 @@ export default function Home() {
     setError("");
 
     try {
-      for (const file of Array.from(files)) {
-        // Only PDF
-        if (file.type !== "application/pdf") {
+      for (
+        const file of Array.from(files)
+      ) {
+        if (
+          file.type !==
+          "application/pdf"
+        ) {
           setError(
             `${file.name} is not a PDF file.`
           );
@@ -82,7 +505,6 @@ export default function Home() {
           continue;
         }
 
-        // 20MB limit
         if (
           file.size >
           20 * 1024 * 1024
@@ -124,21 +546,21 @@ export default function Home() {
             continue;
           }
 
-          const newDocument: DocumentItem =
-            {
-              id: crypto.randomUUID(),
+          const newDocument:
+            DocumentItem = {
+            id: crypto.randomUUID(),
 
-              name: file.name,
+            name: file.name,
 
-              size: file.size,
+            size: file.size,
 
-              type: file.type,
+            type: file.type,
 
-              content: data.text,
+            content: data.text,
 
-              pageCount:
-                data.pageCount,
-            };
+            pageCount:
+              data.pageCount,
+          };
 
           setDocuments(
             (current) => [
@@ -162,15 +584,93 @@ export default function Home() {
   };
 
   // =========================================
-  // ASK AI
+  // CREATE NEW CONVERSATION
   // =========================================
 
-  const handleAskAI = async () => {
-    if (!question.trim()) {
+  const createConversation =
+    (
+      firstQuestion: string
+    ) => {
+      const id =
+        crypto.randomUUID();
+
+      const title =
+        firstQuestion.length > 40
+          ? `${firstQuestion.slice(
+              0,
+              40
+            )}...`
+          : firstQuestion;
+
+      const conversation:
+        Conversation = {
+        id,
+
+        title,
+
+        createdAt: Date.now(),
+
+        messages: [],
+      };
+
+      setConversations(
+        (current) => [
+          conversation,
+          ...current,
+        ]
+      );
+
+      setActiveConversationId(
+        id
+      );
+
+      return id;
+    };
+
+  // =========================================
+  // UPDATE CONVERSATION MESSAGES
+  // =========================================
+
+  const updateConversationMessages =
+    (
+      conversationId: string,
+      updatedMessages: Message[]
+    ) => {
+      setConversations(
+        (current) =>
+          current.map(
+            (conversation) =>
+              conversation.id ===
+              conversationId
+                ? {
+                    ...conversation,
+                    messages:
+                      updatedMessages,
+                  }
+                : conversation
+          )
+      );
+    };
+
+  // =========================================
+  // SEND QUESTION TO AI
+  // =========================================
+
+  const handleAskAI = async (
+    questionOverride?: string
+  ) => {
+    const currentQuestion =
+      questionOverride ?? question;
+
+    if (
+      !currentQuestion.trim()
+    ) {
       return;
     }
 
-    if (documents.length === 0) {
+    if (
+      documents.length === 0
+    ) {
       setError(
         "Please upload at least one document first."
       );
@@ -178,14 +678,36 @@ export default function Home() {
       return;
     }
 
+    if (isAsking) {
+      return;
+    }
+
     setError("");
     setIsAsking(true);
 
     const userQuestion =
-      question.trim();
+      currentQuestion.trim();
 
-    // Add user message
-    const userMessage: Message = {
+    // ---------------------------------------
+    // CREATE OR USE CONVERSATION
+    // ---------------------------------------
+
+    let conversationId =
+      activeConversationId;
+
+    if (!conversationId) {
+      conversationId =
+        createConversation(
+          userQuestion
+        );
+    }
+
+    // ---------------------------------------
+    // CREATE USER MESSAGE
+    // ---------------------------------------
+
+    const userMessage:
+      Message = {
       id: crypto.randomUUID(),
 
       role: "user",
@@ -193,73 +715,163 @@ export default function Home() {
       content: userQuestion,
     };
 
-    setMessages(
-      (current) => [
-        ...current,
+    const updatedMessages =
+      [
+        ...messages,
         userMessage,
-      ]
+      ];
+
+    setMessages(
+      updatedMessages
     );
 
     setQuestion("");
 
+    // ---------------------------------------
+    // CREATE TEMP ASSISTANT MESSAGE
+    // ---------------------------------------
+
+    const assistantId =
+      crypto.randomUUID();
+
+    const assistantMessage:
+      Message = {
+      id: assistantId,
+
+      role: "assistant",
+
+      answer:
+        createEmptyAnswer(),
+    };
+
+    const messagesWithAssistant =
+      [
+        ...updatedMessages,
+        assistantMessage,
+      ];
+
+    setMessages(
+      messagesWithAssistant
+    );
+
+    updateConversationMessages(
+      conversationId,
+      messagesWithAssistant
+    );
+
     try {
+      // -------------------------------------
+      // CALL API
+      // -------------------------------------
+
       const response =
-        await fetch("/api/chat", {
-          method: "POST",
+        await fetch(
+          "/api/chat",
+          {
+            method: "POST",
 
-          headers: {
-            "Content-Type":
-              "application/json",
-          },
+            headers: {
+              "Content-Type":
+                "application/json",
+            },
 
-          body: JSON.stringify({
-            question:
-              userQuestion,
+            body: JSON.stringify({
+              question:
+                userQuestion,
 
-            documents:
-              documents.map(
-                (document) => ({
-                  name:
-                    document.name,
+              documents:
+                documents.map(
+                  (document) => ({
+                    name:
+                      document.name,
 
-                  content:
-                    document.content,
-                })
-              ),
-          }),
-        });
+                    content:
+                      document.content,
+                  })
+                ),
+            }),
+          }
+        );
 
-      const data =
-        await response.json();
+      // -------------------------------------
+      // HANDLE API ERROR
+      // -------------------------------------
 
       if (!response.ok) {
+        const errorText =
+          await response.text();
+
+        let errorMessage =
+          "Failed to get AI response.";
+
+        try {
+          const errorData =
+            JSON.parse(
+              errorText
+            );
+
+          errorMessage =
+            errorData.error ||
+            errorMessage;
+        } catch {
+          errorMessage =
+            errorText ||
+            errorMessage;
+        }
+
         throw new Error(
-          data.error ||
-            "Failed to get AI response."
+          errorMessage
         );
       }
 
-      // =====================================
-      // STRUCTURED ANSWER
-      // =====================================
+      // -------------------------------------
+      // READ JSON
+      // -------------------------------------
 
-      const assistantMessage:
-        Message = {
-          id: crypto.randomUUID(),
+      const finalAnswer =
+        await readAIResponse(
+          response
+        );
 
-          role: "assistant",
+      // -------------------------------------
+      // UPDATE ASSISTANT MESSAGE
+      // -------------------------------------
 
-          answer: data.answer,
-        };
+      const finalMessages =
+        messagesWithAssistant.map(
+          (message) =>
+            message.id ===
+            assistantId
+              ? {
+                  ...message,
+                  answer:
+                    finalAnswer,
+                }
+              : message
+        );
 
       setMessages(
-        (current) => [
-          ...current,
-          assistantMessage,
-        ]
+        finalMessages
+      );
+
+      updateConversationMessages(
+        conversationId,
+        finalMessages
       );
     } catch (error) {
-      console.error(error);
+      console.error(
+        "AI request failed:",
+        error
+      );
+
+      setMessages(
+        updatedMessages
+      );
+
+      updateConversationMessages(
+        conversationId,
+        updatedMessages
+      );
 
       setError(
         error instanceof Error
@@ -270,6 +882,308 @@ export default function Home() {
       setIsAsking(false);
     }
   };
+
+  // =========================================
+  // REGENERATE
+  // =========================================
+
+  const handleRegenerate = async (
+    assistantMessageId: string
+  ) => {
+    if (isAsking) {
+      return;
+    }
+
+    const assistantIndex =
+      messages.findIndex(
+        (message) =>
+          message.id ===
+          assistantMessageId
+      );
+
+    if (
+      assistantIndex === -1
+    ) {
+      return;
+    }
+
+    // ---------------------------------------
+    // FIND PREVIOUS USER QUESTION
+    // ---------------------------------------
+
+    let userQuestion =
+      "";
+
+    for (
+      let index =
+        assistantIndex - 1;
+      index >= 0;
+      index--
+    ) {
+      if (
+        messages[index].role ===
+        "user"
+      ) {
+        userQuestion =
+          messages[index]
+            .content || "";
+
+        break;
+      }
+    }
+
+    if (!userQuestion) {
+      setError(
+        "Could not find the question for this answer."
+      );
+
+      return;
+    }
+
+    if (
+      documents.length === 0
+    ) {
+      setError(
+        "Please upload at least one document first."
+      );
+
+      return;
+    }
+
+    setError("");
+    setIsAsking(true);
+
+    // ---------------------------------------
+    // CREATE NEW ASSISTANT MESSAGE
+    // ---------------------------------------
+
+    const newAssistantId =
+      crypto.randomUUID();
+
+    const temporaryMessages =
+      messages.map(
+        (message, index) =>
+          index === assistantIndex
+            ? {
+                id: newAssistantId,
+
+                role: "assistant" as const,
+
+                answer:
+                  createEmptyAnswer(),
+              }
+            : message
+      );
+
+    setMessages(
+      temporaryMessages
+    );
+
+    if (activeConversationId) {
+      updateConversationMessages(
+        activeConversationId,
+        temporaryMessages
+      );
+    }
+
+    try {
+      // -------------------------------------
+      // CALL API
+      // -------------------------------------
+
+      const response =
+        await fetch(
+          "/api/chat",
+          {
+            method: "POST",
+
+            headers: {
+              "Content-Type":
+                "application/json",
+            },
+
+            body: JSON.stringify({
+              question:
+                userQuestion,
+
+              documents:
+                documents.map(
+                  (document) => ({
+                    name:
+                      document.name,
+
+                    content:
+                      document.content,
+                  })
+                ),
+            }),
+          }
+        );
+
+      // -------------------------------------
+      // HANDLE API ERROR
+      // -------------------------------------
+
+      if (!response.ok) {
+        const errorText =
+          await response.text();
+
+        let errorMessage =
+          "Failed to regenerate answer.";
+
+        try {
+          const errorData =
+            JSON.parse(
+              errorText
+            );
+
+          errorMessage =
+            errorData.error ||
+            errorMessage;
+        } catch {
+          errorMessage =
+            errorText ||
+            errorMessage;
+        }
+
+        throw new Error(
+          errorMessage
+        );
+      }
+
+      // -------------------------------------
+      // READ JSON
+      // -------------------------------------
+
+      const finalAnswer =
+        await readAIResponse(
+          response
+        );
+
+      // -------------------------------------
+      // UPDATE MESSAGE
+      // -------------------------------------
+
+      const finalMessages =
+        temporaryMessages.map(
+          (message) =>
+            message.id ===
+            newAssistantId
+              ? {
+                  ...message,
+                  answer:
+                    finalAnswer,
+                }
+              : message
+        );
+
+      setMessages(
+        finalMessages
+      );
+
+      if (activeConversationId) {
+        updateConversationMessages(
+          activeConversationId,
+          finalMessages
+        );
+      }
+    } catch (error) {
+      console.error(
+        "Regenerate failed:",
+        error
+      );
+
+      setError(
+        error instanceof Error
+          ? error.message
+          : "Failed to regenerate answer."
+      );
+    } finally {
+      setIsAsking(false);
+    }
+  };
+
+  // =========================================
+  // NEW CHAT
+  // =========================================
+
+  const handleNewChat = () => {
+    if (isAsking) {
+      return;
+    }
+
+    setMessages([]);
+
+    setQuestion("");
+
+    setError("");
+
+    setActiveConversationId(
+      null
+    );
+  };
+
+  // =========================================
+  // SELECT CONVERSATION
+  // =========================================
+
+  const handleSelectConversation =
+    (
+      conversation: Conversation
+    ) => {
+      if (isAsking) {
+        return;
+      }
+
+      setActiveConversationId(
+        conversation.id
+      );
+
+      setMessages(
+        conversation.messages
+      );
+
+      setQuestion("");
+
+      setError("");
+    };
+
+  // =========================================
+  // DELETE CONVERSATION
+  // =========================================
+
+  const handleDeleteConversation =
+    (
+      conversationId: string
+    ) => {
+      if (isAsking) {
+        return;
+      }
+
+      setConversations(
+        (current) =>
+          current.filter(
+            (conversation) =>
+              conversation.id !==
+              conversationId
+          )
+      );
+
+      if (
+        activeConversationId ===
+        conversationId
+      ) {
+        setActiveConversationId(
+          null
+        );
+
+        setMessages([]);
+
+        setQuestion("");
+
+        setError("");
+      }
+    };
 
   // =========================================
   // ENTER KEY
@@ -302,27 +1216,42 @@ ${answer.summary}
 
 KEY POINTS
 
-${answer.key_points
-  .map(
-    (point) => `• ${point}`
-  )
-  .join("\n")}
+${
+  answer.key_points.length > 0
+    ? answer.key_points
+        .map(
+          (point) =>
+            `• ${point}`
+        )
+        .join("\n")
+    : "No key points."
+}
 
-RISKS
+RISKS & LIMITATIONS
 
-${answer.risks
-  .map(
-    (risk) => `• ${risk}`
-  )
-  .join("\n")}
+${
+  answer.risks.length > 0
+    ? answer.risks
+        .map(
+          (risk) =>
+            `• ${risk}`
+        )
+        .join("\n")
+    : "No risks or limitations."
+}
 
-ACTIONS
+SUGGESTED ACTIONS
 
-${answer.actions
-  .map(
-    (action) => `• ${action}`
-  )
-  .join("\n")}
+${
+  answer.actions.length > 0
+    ? answer.actions
+        .map(
+          (action) =>
+            `• ${action}`
+        )
+        .join("\n")
+    : "No suggested actions."
+}
 `;
 
     try {
@@ -331,43 +1260,11 @@ ${answer.actions
       );
     } catch (error) {
       console.error(error);
+
+      setError(
+        "Could not copy the answer."
+      );
     }
-  };
-
-  // =========================================
-  // REGENERATE
-  // =========================================
-
-  const handleRegenerate = async () => {
-    const lastUserMessage =
-      [...messages]
-        .reverse()
-        .find(
-          (message) =>
-            message.role === "user"
-        );
-
-    if (!lastUserMessage?.content) {
-      return;
-    }
-
-    setQuestion(
-      lastUserMessage.content
-    );
-
-    setTimeout(() => {
-      handleAskAI();
-    }, 0);
-  };
-
-  // =========================================
-  // NEW CHAT
-  // =========================================
-
-  const handleNewChat = () => {
-    setMessages([]);
-    setQuestion("");
-    setError("");
   };
 
   // =========================================
@@ -401,7 +1298,8 @@ ${answer.actions
   // =========================================
 
   const renderAnswer = (
-    answer: StructuredAnswer
+    answer: StructuredAnswer,
+    messageId: string
   ) => {
     return (
       <div className="space-y-4">
@@ -422,30 +1320,36 @@ ${answer.actions
 
           </div>
 
-          <p className="text-sm leading-7 text-slate-300">
-            {answer.summary}
-          </p>
+          {answer.summary ? (
+            <p className="text-sm leading-7 text-slate-300">
+              {answer.summary}
+            </p>
+          ) : (
+            <div className="text-sm text-slate-500">
+              No summary available.
+            </div>
+          )}
 
         </div>
 
         {/* KEY POINTS */}
 
-        {answer.key_points.length >
-          0 && (
-          <div className="rounded-xl border border-white/10 bg-white/[0.03] p-4">
+        <div className="rounded-xl border border-white/10 bg-white/[0.03] p-4">
 
-            <div className="mb-3 flex items-center gap-2">
+          <div className="mb-3 flex items-center gap-2">
 
-              <span className="text-lg">
-                🔑
-              </span>
+            <span className="text-lg">
+              🔑
+            </span>
 
-              <h4 className="font-semibold">
-                Key Points
-              </h4>
+            <h4 className="font-semibold">
+              Key Points
+            </h4>
 
-            </div>
+          </div>
 
+          {answer.key_points.length >
+          0 ? (
             <ul className="space-y-2">
 
               {answer.key_points.map(
@@ -457,6 +1361,7 @@ ${answer.actions
                     key={index}
                     className="flex gap-3 text-sm leading-6 text-slate-300"
                   >
+
                     <span className="mt-1 text-blue-400">
                       •
                     </span>
@@ -464,33 +1369,38 @@ ${answer.actions
                     <span>
                       {point}
                     </span>
+
                   </li>
                 )
               )}
 
             </ul>
+          ) : (
+            <p className="text-sm text-slate-500">
+              No key points available.
+            </p>
+          )}
 
-          </div>
-        )}
+        </div>
 
         {/* RISKS */}
 
-        {answer.risks.length >
-          0 && (
-          <div className="rounded-xl border border-white/10 bg-white/[0.03] p-4">
+        <div className="rounded-xl border border-white/10 bg-white/[0.03] p-4">
 
-            <div className="mb-3 flex items-center gap-2">
+          <div className="mb-3 flex items-center gap-2">
 
-              <span className="text-lg">
-                ⚠️
-              </span>
+            <span className="text-lg">
+              ⚠️
+            </span>
 
-              <h4 className="font-semibold">
-                Risks & Limitations
-              </h4>
+            <h4 className="font-semibold">
+              Risks & Limitations
+            </h4>
 
-            </div>
+          </div>
 
+          {answer.risks.length >
+          0 ? (
             <ul className="space-y-2">
 
               {answer.risks.map(
@@ -502,6 +1412,7 @@ ${answer.actions
                     key={index}
                     className="flex gap-3 text-sm leading-6 text-slate-300"
                   >
+
                     <span className="mt-1">
                       •
                     </span>
@@ -509,33 +1420,38 @@ ${answer.actions
                     <span>
                       {risk}
                     </span>
+
                   </li>
                 )
               )}
 
             </ul>
+          ) : (
+            <p className="text-sm text-slate-500">
+              No risks or limitations identified.
+            </p>
+          )}
 
-          </div>
-        )}
+        </div>
 
         {/* ACTIONS */}
 
-        {answer.actions.length >
-          0 && (
-          <div className="rounded-xl border border-white/10 bg-white/[0.03] p-4">
+        <div className="rounded-xl border border-white/10 bg-white/[0.03] p-4">
 
-            <div className="mb-3 flex items-center gap-2">
+          <div className="mb-3 flex items-center gap-2">
 
-              <span className="text-lg">
-                ✓
-              </span>
+            <span className="text-lg">
+              ✓
+            </span>
 
-              <h4 className="font-semibold">
-                Suggested Actions
-              </h4>
+            <h4 className="font-semibold">
+              Suggested Actions
+            </h4>
 
-            </div>
+          </div>
 
+          {answer.actions.length >
+          0 ? (
             <ul className="space-y-2">
 
               {answer.actions.map(
@@ -547,6 +1463,7 @@ ${answer.actions
                     key={index}
                     className="flex gap-3 text-sm leading-6 text-slate-300"
                   >
+
                     <span className="mt-1 text-green-400">
                       •
                     </span>
@@ -554,14 +1471,19 @@ ${answer.actions
                     <span>
                       {action}
                     </span>
+
                   </li>
                 )
               )}
 
             </ul>
+          ) : (
+            <p className="text-sm text-slate-500">
+              No suggested actions.
+            </p>
+          )}
 
-          </div>
-        )}
+        </div>
 
         {/* ACTION BUTTONS */}
 
@@ -571,16 +1493,20 @@ ${answer.actions
             onClick={() =>
               handleCopy(answer)
             }
-            className="rounded-md px-3 py-1.5 text-xs text-slate-400 transition hover:bg-white/5 hover:text-white"
+            disabled={isAsking}
+            className="rounded-md px-3 py-1.5 text-xs text-slate-400 transition hover:bg-white/5 hover:text-white disabled:opacity-40"
           >
             ⧉ Copy
           </button>
 
           <button
-            onClick={
-              handleRegenerate
+            onClick={() =>
+              handleRegenerate(
+                messageId
+              )
             }
-            className="rounded-md px-3 py-1.5 text-xs text-slate-400 transition hover:bg-white/5 hover:text-white"
+            disabled={isAsking}
+            className="rounded-md px-3 py-1.5 text-xs text-slate-400 transition hover:bg-white/5 hover:text-white disabled:opacity-40"
           >
             ↻ Regenerate
           </button>
@@ -600,9 +1526,7 @@ ${answer.actions
 
       <div className="flex min-h-screen">
 
-        {/* =====================================
-            FILE INPUT
-        ===================================== */}
+        {/* FILE INPUT */}
 
         <input
           ref={fileInputRef}
@@ -615,11 +1539,11 @@ ${answer.actions
           }
         />
 
-        {/* =====================================
-            SIDEBAR
-        ===================================== */}
+        {/* SIDEBAR */}
 
-        <aside className="hidden w-72 shrink-0 border-r border-white/10 bg-slate-900 md:block">
+        <aside className="hidden w-80 shrink-0 border-r border-white/10 bg-slate-900 md:flex md:flex-col">
+
+          {/* BRAND */}
 
           <div className="border-b border-white/10 p-5">
 
@@ -633,25 +1557,127 @@ ${answer.actions
 
           </div>
 
+          {/* NEW CHAT */}
+
           <div className="p-4">
+
+            <button
+              onClick={
+                handleNewChat
+              }
+              disabled={isAsking}
+              className="w-full rounded-lg border border-white/10 bg-white/[0.03] px-4 py-2.5 text-sm font-medium transition hover:bg-white/10 disabled:opacity-40"
+            >
+              + New chat
+            </button>
+
+          </div>
+
+          {/* CONVERSATION HISTORY */}
+
+          <div className="min-h-0 flex-1 overflow-y-auto px-4">
+
+            <p className="mb-3 text-xs font-medium uppercase tracking-wider text-slate-500">
+              Conversation History
+            </p>
+
+            {conversations.length ===
+            0 ? (
+              <div className="rounded-lg px-3 py-3 text-sm text-slate-500">
+                No conversations yet.
+              </div>
+            ) : (
+              <div className="space-y-1">
+
+                {conversations.map(
+                  (
+                    conversation
+                  ) => (
+
+                    <div
+                      key={
+                        conversation.id
+                      }
+                      className={`group flex items-center gap-1 rounded-lg transition ${
+                        activeConversationId ===
+                        conversation.id
+                          ? "bg-white/10"
+                          : "hover:bg-white/5"
+                      }`}
+                    >
+
+                      <button
+                        onClick={() =>
+                          handleSelectConversation(
+                            conversation
+                          )
+                        }
+                        disabled={
+                          isAsking
+                        }
+                        className="min-w-0 flex-1 px-3 py-2.5 text-left disabled:opacity-40"
+                      >
+
+                        <p className="truncate text-sm text-slate-200">
+                          {
+                            conversation.title
+                          }
+                        </p>
+
+                        <p className="mt-1 text-[11px] text-slate-500">
+                          {
+                            conversation
+                              .messages
+                              .length
+                          }{" "}
+                          messages
+                        </p>
+
+                      </button>
+
+                      <button
+                        onClick={() =>
+                          handleDeleteConversation(
+                            conversation.id
+                          )
+                        }
+                        disabled={
+                          isAsking
+                        }
+                        className="mr-2 rounded p-1 text-xs text-slate-600 opacity-0 transition hover:bg-white/10 hover:text-red-400 group-hover:opacity-100 disabled:opacity-20"
+                        title="Delete conversation"
+                      >
+                        ×
+                      </button>
+
+                    </div>
+
+                  )
+                )}
+
+              </div>
+            )}
+
+          </div>
+
+          {/* DOCUMENTS */}
+
+          <div className="max-h-[40%] shrink-0 overflow-y-auto border-t border-white/10 p-4">
 
             <button
               onClick={
                 handleUploadClick
               }
               disabled={
-                isUploading
+                isUploading ||
+                isAsking
               }
-              className="w-full rounded-lg bg-white px-4 py-2.5 text-sm font-medium text-slate-900 transition hover:bg-slate-200 disabled:opacity-50"
+              className="mb-4 w-full rounded-lg bg-white px-4 py-2.5 text-sm font-medium text-slate-900 transition hover:bg-slate-200 disabled:opacity-50"
             >
               {isUploading
                 ? "Processing..."
                 : "+ Upload document"}
             </button>
-
-          </div>
-
-          <div className="px-4">
 
             <p className="mb-3 text-xs font-medium uppercase tracking-wider text-slate-500">
               Documents
@@ -715,34 +1741,96 @@ ${answer.actions
 
         </aside>
 
-        {/* =====================================
-            MAIN
-        ===================================== */}
+        {/* MAIN */}
 
         <section className="flex min-h-screen min-w-0 flex-1 flex-col">
 
           {/* HEADER */}
 
-          <header className="flex h-16 shrink-0 items-center justify-between border-b border-white/10 px-5">
+          <header className="flex h-16 shrink-0 items-center justify-between border-b border-white/10 px-4 sm:px-5">
 
-            <h2 className="font-medium">
-              AI Research
-            </h2>
+            <div>
 
-            <button
-              onClick={
-                handleNewChat
-              }
-              className="rounded-lg border border-white/10 px-3 py-2 text-sm transition hover:bg-white/5"
-            >
-              + New chat
-            </button>
+              <h2 className="font-medium">
+                AI Research
+              </h2>
+
+              <p className="hidden text-xs text-slate-500 sm:block">
+                Research from your uploaded documents
+              </p>
+
+            </div>
+
+            <div className="flex items-center gap-2">
+
+              {/* MOBILE UPLOAD */}
+
+              <button
+                onClick={
+                  handleUploadClick
+                }
+                disabled={
+                  isUploading ||
+                  isAsking
+                }
+                className="rounded-lg border border-white/10 px-3 py-2 text-sm transition hover:bg-white/5 disabled:opacity-50 md:hidden"
+              >
+                {isUploading
+                  ? "..."
+                  : "📄"}
+              </button>
+
+              <button
+                onClick={
+                  handleNewChat
+                }
+                disabled={isAsking}
+                className="rounded-lg border border-white/10 px-3 py-2 text-sm transition hover:bg-white/5 disabled:opacity-40"
+              >
+                + New chat
+              </button>
+
+            </div>
 
           </header>
 
-          {/* =================================
-              CHAT
-          ================================= */}
+          {/* MOBILE DOCUMENTS */}
+
+          {documents.length >
+            0 && (
+            <div className="border-b border-white/10 px-4 py-3 md:hidden">
+
+              <div className="flex gap-2 overflow-x-auto">
+
+                {documents.map(
+                  (document) => (
+                    <div
+                      key={
+                        document.id
+                      }
+                      className="flex shrink-0 items-center gap-2 rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2"
+                    >
+
+                      <span>
+                        📄
+                      </span>
+
+                      <span className="max-w-40 truncate text-xs text-slate-300">
+                        {
+                          document.name
+                        }
+                      </span>
+
+                    </div>
+                  )
+                )}
+
+              </div>
+
+            </div>
+          )}
+
+          {/* CHAT */}
 
           <div className="flex-1 overflow-y-auto p-4 sm:p-6">
 
@@ -778,7 +1866,8 @@ ${answer.actions
                       handleUploadClick
                     }
                     disabled={
-                      isUploading
+                      isUploading ||
+                      isAsking
                     }
                     className="mt-6 rounded-lg bg-white px-5 py-2.5 text-sm font-medium text-slate-900 transition hover:bg-slate-200 disabled:opacity-50"
                   >
@@ -830,7 +1919,8 @@ ${answer.actions
 
                           {message.answer &&
                             renderAnswer(
-                              message.answer
+                              message.answer,
+                              message.id
                             )}
 
                         </div>
@@ -849,7 +1939,7 @@ ${answer.actions
                     <div className="rounded-2xl border border-white/10 bg-slate-900 px-5 py-4 text-sm text-slate-400">
 
                       <span className="animate-pulse">
-                        AI is thinking...
+                        AI is researching...
                       </span>
 
                     </div>
@@ -864,9 +1954,7 @@ ${answer.actions
 
           </div>
 
-          {/* =================================
-              ERROR
-          ================================= */}
+          {/* ERROR */}
 
           {error && (
 
@@ -882,9 +1970,7 @@ ${answer.actions
 
           )}
 
-          {/* =================================
-              INPUT
-          ================================= */}
+          {/* INPUT */}
 
           <div className="border-t border-white/10 p-3 sm:p-4">
 
@@ -920,8 +2006,8 @@ ${answer.actions
               />
 
               <button
-                onClick={
-                  handleAskAI
+                onClick={() =>
+                  handleAskAI()
                 }
                 disabled={
                   documents.length ===
@@ -939,8 +2025,7 @@ ${answer.actions
             </div>
 
             <p className="mt-2 text-center text-xs text-slate-600">
-              AI answers are based on your uploaded
-              documents.
+              AI answers are based on your uploaded documents.
             </p>
 
           </div>
