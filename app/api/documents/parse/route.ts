@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { CanvasFactory } from "pdf-parse/worker";
 import { PDFParse } from "pdf-parse";
 
 export async function POST(request: Request) {
@@ -54,6 +55,7 @@ export async function POST(request: Request) {
     // Tạo PDF parser
     const parser = new PDFParse({
       data: buffer,
+      CanvasFactory,
     });
 
     // Đọc text trong PDF
