@@ -33,13 +33,15 @@ export async function POST(request: Request) {
       );
     }
 
-    // Giới hạn 20 MB
-    const maxFileSize = 20 * 1024 * 1024;
+    // Giới hạn 4 MB
+    // Giữ thấp hơn giới hạn request của Vercel để tránh lỗi 413
+    const maxFileSize = 4 * 1024 * 1024;
 
     if (file.size > maxFileSize) {
       return NextResponse.json(
         {
-          error: "File size must be smaller than 20 MB.",
+          error:
+            "File size must be 4 MB or smaller.",
         },
         {
           status: 400,

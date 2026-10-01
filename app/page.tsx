@@ -45,6 +45,9 @@ const ACTIVE_CONVERSATION_KEY =
 const DOCUMENTS_STORAGE_KEY =
   "research-ai-documents";
 
+const MAX_FILE_SIZE =
+  4 * 1024 * 1024;
+
 // =========================================
 // EMPTY ANSWER
 // =========================================
@@ -609,12 +612,10 @@ export default function Home() {
 
           if (
             file.size >
-            20 *
-              1024 *
-              1024
+            MAX_FILE_SIZE
           ) {
             setError(
-              `${file.name} is larger than 20 MB.`
+              `${file.name} is larger than 4 MB. Maximum file size is 4 MB.`
             );
 
             continue;
@@ -1816,12 +1817,16 @@ ${
                 isUploading ||
                 isAsking
               }
-              className="mb-4 w-full rounded-lg bg-white px-4 py-2.5 text-sm font-medium text-slate-900 transition hover:bg-slate-200 disabled:opacity-50"
+              className="w-full rounded-lg bg-white px-4 py-2.5 text-sm font-medium text-slate-900 transition hover:bg-slate-200 disabled:opacity-50"
             >
               {isUploading
                 ? "Processing..."
                 : "+ Upload document"}
             </button>
+
+            <p className="mb-4 mt-2 text-center text-[11px] text-slate-500">
+              PDF only · Maximum file size: 4 MB
+            </p>
 
             <p className="mb-3 text-xs font-medium uppercase tracking-wider text-slate-500">
               Documents
@@ -2056,6 +2061,10 @@ ${
                       ? "Upload your first document"
                       : "Upload another document"}
                   </button>
+
+                  <p className="mt-3 text-xs text-slate-500">
+                    PDF only · Maximum file size: 4 MB
+                  </p>
 
                 </div>
 
